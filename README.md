@@ -1,119 +1,167 @@
 # ESPHome Configuration for Wood Pellet Stove Control
 
-This repository contains the ESPHome YAML configuration and the custom components for controlling a wood pellet stove using an ESP8266-based system. The project includes functionalities such as button pressing with servos, fan control, and pellet level monitoring.
+This repository contains the ESPHome YAML configuration for controlling a wood pellet stove using an ESP32-based system. The project includes functionalities such as button pressing with servos, fan control, and pellet level monitoring.
 
 ## Features
 
-- **Button Control with Servos**: Simulates pressing power and intensity buttons.
+- **Button Control with Servos**: Simulates pressing power and intensity buttons using servo motors.
 - **Fan Control**: Manages a cross-flow fan via a relay.
-- **Pellet Level Monitoring**: Uses a Time-of-Flight (ToF) sensor.
-- **Custom Status and Intensity Monitoring**.
+- **Pellet Level Monitoring**: Uses a VL53L0X Time-of-Flight (ToF) sensor to monitor pellet supply.
+- **Intensity Control**: Adjustable intensity levels (0-100%) via Home Assistant number component.
+- **Status Monitoring**: Real-time status updates (On, Off, Turning On, Turning Off).
 
 ## Setup
 
-1. **Clone this repository** and upload the `rika-visio.yaml` to your ESP board.
-2. Ensure the additional libraries (`Servo`, `Wire`, `Adafruit_VL53L0X`) are installed.
-3. Configure your Wi-Fi credentials and secrets in the `!secret` section.
+1. **Clone this repository** and upload the `rika-visio.yaml` to your ESP32 board using ESPHome.
+2. Configure your Wi-Fi credentials in a `secrets.yaml` file.
+3. Adjust hardware pin assignments and timing parameters in the `substitutions` section if needed.
 
 ## Hardware Requirements
 
-- **ESP8266 Board** (e.g., NodeMCU v2)
-- **Mini Servos**
-- **Relay Module**
-- **Time-of-Flight (ToF) Sensor**
+- **ESP32 Board** (e.g. Waveshare ESP32-S3 Zero)
+- **2x Mini Servos** (for power and intensity buttons)
+- **Relay Module** (for fan control)
+- **VL53L0X Time-of-Flight Sensor** (for pellet level monitoring)
 
-## Code Overview
+## Configuration Overview
 
-The YAML configuration file defines a custom ESPHome setup for controlling a wood pellet stove, with integrated components for button pressing, fan control, and monitoring. Below is a detailed breakdown of the main sections:
+The YAML configuration file uses modern ESPHome features with a clean, maintainable structure. Below is a detailed breakdown of the main sections:
 
-### 1. **Custom Components**
+### 1. **Substitutions**
 
-The `custom_component` and `lambda` functions in the YAML file integrate custom C++ classes (e.g., `RVStatus`, `RVIntensity`, `RVPowerSwitch`, `RVFanSwitch`) defined in the `rika-visio.h` file. These classes manage the interaction between ESPHome and the external hardware.
-
-```yaml
-custom_component:
-  - lambda: |-
-      auto rv_values = new RVValuesAPI();
-      return {rv_values};
-```
-
-### 2. **Text Sensors**
-
-The configuration includes a custom `text_sensor` for monitoring the stove's status. The `RVStatus` component is registered, and its output is displayed as a text sensor in the ESPHome dashboard.
+All configurable values are defined in the `substitutions` section for easy customization:
 
 ```yaml
-text_sensor:
-  - platform: custom
-    lambda: |-
-      auto rv_status = new RVStatus();
-      App.register_component(rv_status);
-      return {rv_status->status};
-    text_sensors:
-      - name: "Rika Visio Status"
+substitutions:
+  # Hardware Pins
+  power_servo_pin: GPIO1
+  intensity_servo_pin: GPIO2
+  fan_pin: GPIO4
+
+  # Servo Positions
+  power_servo_press: 0.25
+  power_servo_release: 0.4
+
+  # Timing
+  power_on_period: 1260   # 21 minutes
+  power_off_period: 480   # 8 minutes
+
+  # Pellet Level Calibration
+  level_full_cm: 6.0
+  level_empty_cm: 50.0
 ```
 
-### 3. **Numeric Sensors**
+### 2. **Number Component for Intensity Control**
 
-There are two `custom` sensors for reading the stove's intensity and pellet level:
+The intensity is controlled via a `number` component in Home Assistant, providing a slider interface (0-100%, step 5):
 
-- **Intensity Sensor**: Displays the stove’s operating intensity as a percentage.
-- **Pellet Level Sensor**: Monitors the pellet supply and warns when the level is low.
+```yaml
+number:
+  - platform: template
+    name: "Rika Visio Intensity Level"
+    min_value: 0
+    max_value: 100
+    step: 5
+```
+
+The component automatically converts percentage values to internal servo levels (1-20).
+
+### 3. **Global Variables**
+
+State management using ESPHome globals:
+
+- **g_power**: Current power state (on/off)
+- **g_intensity**: Current intensity level (0-20)
+- **g_powering_up/down**: Transition states
+- **g_last_time_power**: Timing for power transitions
+
+### 4. **Servo Control**
+
+Two servos simulate button presses:
+
+- **Power Servo**: Toggles the stove on/off
+- **Intensity Servo**: Adjusts intensity up (+) or down (-)
+
+Servos automatically detach after 5 seconds to save power and reduce noise.
+
+### 5. **Automation Logic**
+
+An `interval` component runs every second to:
+- Handle power on/off transitions with configurable delays
+- Adjust intensity by pressing buttons incrementally
+- Update status text sensor
+
+### 6. **Sensors**
+
+- **Status Sensor**: Text sensor showing current state (On, Off, Turning On, Turning Off)
+- **Intensity Sensor**: Template sensor displaying current intensity as percentage
+- **Pellet Level Sensor**: VL53L0X distance sensor with mapping to 0-100% and moving average filter
 
 ```yaml
 sensor:
-  - platform: custom
-    lambda: |-
-      auto rv_intensity = new RVIntensity();
-      App.register_component(rv_intensity);
-      return {rv_intensity};
-    sensors:
-      name: "Rika Visio Intensity"
-      unit_of_measurement: "%"
+  - platform: template
+    name: "Rika Visio Intensity"
+    unit_of_measurement: "%"
+    lambda: return id(g_intensity) * 5.0;
+
+  - platform: vl53l0x
+    name: "Rika Visio Level Raw"
+
+  - platform: template
+    name: "Rika Visio Level"
+    filters:
+      - sliding_window_moving_average:
+          window_size: 10
 ```
 
-### 4. **Switches**
+### 7. **Switches**
 
-Two custom `switch` components handle power and fan control:
+- **Power Switch**: Template switch to turn the stove on/off
+- **Fan Switch**: GPIO switch to control the relay for the fan
 
-- **Power Switch**: Emulates the power button press using a servo.
-- **Fan Switch**: Operates the cross-flow fan using a relay.
+### 8. **Wi-Fi and OTA**
+
+Standard ESPHome configuration with:
+- Static IP address (10.1.1.112)
+- Fast connect and optimized power settings
+- OTA updates with password protection
+- Fallback AP mode
+
+### 9. **API Services**
+
+Custom service for manual servo position testing:
 
 ```yaml
-switch:
-  - platform: custom
-    lambda: |-
-      auto rv_power_switch = new RVPowerSwitch();
-      App.register_component(rv_power_switch);
-      return {rv_power_switch};
-    switches:
-      name: "Rika Visio Power"
+api:
+  services:
+    - service: manual_servo_positions
+      variables:
+        power: float
+        intensity: float
 ```
 
-### 5. **Wi-Fi and OTA Setup**
+## Usage
 
-The configuration includes standard ESPHome modules for Wi-Fi connectivity and OTA (over-the-air) updates. The `!secret` placeholders ensure sensitive data like passwords and API keys are kept secure.
+### In Home Assistant
 
-```yaml
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
+1. **Power Control**: Use the "Rika Visio Power" switch to turn the stove on/off
+2. **Intensity Adjustment**: Use the "Rika Visio Intensity Level" number slider (0-100%, step 5%)
+3. **Fan Control**: Toggle the "Rika Visio Fan" switch
+4. **Monitoring**: View status, current intensity, and pellet level
 
-ota:
-  password: !secret ota_pw_rika_visio
-```
+### Timing
 
-### 6. **AP Mode**
+- **Power On**: Takes ~21 minutes (configurable via `power_on_period`)
+- **Power Off**: Takes ~8 minutes (configurable via `power_off_period`)
+- **Intensity Changes**: Applied incrementally, one level at a time
 
-A fallback hotspot (`ap`) is set up to maintain accessibility if the primary Wi-Fi connection fails.
+## Customization
 
-```yaml
-ap:
-  ssid: "Rika Visio Fallback Hotspot"
-  password: !secret ap_pw_rika_visio
-```
-
-This overview provides a deeper understanding of how the custom components and sensors interact within the ESPHome framework. Feel free to modify and extend the YAML file as needed to match your hardware configuration and specific requirements.
-
+All hardware-specific values can be adjusted in the `substitutions` section:
+- Pin assignments
+- Servo positions (calibrate for your specific servos and button positions)
+- Timing periods
+- Pellet level sensor calibration values
 
 ## License
 

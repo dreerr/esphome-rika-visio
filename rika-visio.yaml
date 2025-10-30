@@ -1,78 +1,328 @@
-esphome:
-  name: rika-visio
-  includes:
-    - rika-visio.h
-  libraries:
-    - Servo
-    - Wire
-    - adafruit/Adafruit_VL53L0X @ ^1.2.2
+# ============================================================
+# SUBSTITUTIONS - All configurable values
+# ============================================================
+substitutions:
+  # -- Hardware Pins (ESP32-S3) --
+  power_servo_pin: GPIO1
+  intensity_servo_pin: GPIO2
+  fan_pin: GPIO4
+  i2c_sda_pin: GPIO5
+  i2c_scl_pin: GPIO6
 
-esp8266:
-  board: nodemcuv2
-  restore_from_flash: true
+  # -- Servo Positions (-1.0 to 1.0) --
+  power_servo_press: 0.25
+  power_servo_release: 0.4
+  intensity_servo_press_plus: -0.25
+  intensity_servo_press_minus: 0.07
+  intensity_servo_release: -0.05
+
+  # -- Timing (s) --
+  power_on_period: 1260   # 21 min
+  power_off_period: 480   # 8 min
+
+  # -- Pellet Level Sensor (VL53L0X) --
+  level_full_cm: 6.0
+  level_empty_cm: 50.0
+
+# ============================================================
+# BASE CONFIG
+# ============================================================
+esphome:
+  name: "rika-visio"
+  friendly_name: "Rika Visio"
+  on_boot:
+    priority: -100
+    then:
+      - servo.detach: power_servo
+      - servo.detach: intensity_servo
+      - lambda: |-
+          id(g_last_power) = id(g_power);
+          id(g_last_intensity) = id(g_intensity);
+          if (id(g_power)) {
+            if (id(rika_status_sensor)) id(rika_status_sensor)->publish_state("On");
+          } else {
+            if (id(rika_status_sensor)) id(rika_status_sensor)->publish_state("Off");
+          }
+      #- light.turn_on:
+      #    id: led_ww           
+      #    red: 100%
+      #    green: 0%
+      #    blue: 0%
+      #    brightness: 30%
+
+esp32:
+  board: waveshare_esp32_s3_zero
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+logger:
 
 api:
   encryption:
-    key: !secret api_key_rika_visio
-
+    key: "CLti5ooAJ4ztehffY7GHdMuEZ49foyVA36oTFB8N5kY="
+  services:
+#    - service: set_intensity
+#      variables:
+#        intensity: int
+#      then:
+#        - lambda: |-
+#            ESP_LOGD("main", "Intensity set via API to: %d%%", intensity);
+#            id(g_intensity) = (int)(intensity / 5.0);
+    - service: manual_servo_positions
+      variables:
+        power: float
+        intensity: float
+      then:
+        - lambda: |-
+            ESP_LOGD("main", "Manual Servo Position -> Power: %f, Intensity: %f", power, intensity);
+            id(power_servo).write(power);
+            id(intensity_servo).write(intensity);
+            
 ota:
-  password: !secret ota_pw_rika_visio
+  - platform: esphome
+    password: "6614e76c805705c9ffba4cbc833084b9"
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  fast_connect: true
+  output_power: 18dB
+  power_save_mode: none
+  manual_ip:
+    static_ip: 10.1.1.112
+    gateway: 10.1.1.1
+    subnet: 255.255.255.0
   ap:
     ssid: "Rika Visio Fallback Hotspot"
-    password: !secret ap_pw_rika_visio
+    password: "wbQ0rkDYlauD"
 
-logger:
+i2c:
+  sda: ${i2c_sda_pin}
+  scl: ${i2c_scl_pin}
+  scan: true
+
+globals:
+  - id: g_power
+    type: bool
+    restore_value: yes
+  - id: g_last_power
+    type: bool
+    restore_value: no
+  - id: g_powering_up
+    type: bool
+    initial_value: 'false'
+  - id: g_powering_down
+    type: bool
+    initial_value: 'false'
+  - id: g_last_time_power
+    type: int
+    initial_value: '0'
+  - id: g_intensity
+    type: int
+    restore_value: yes
+  - id: g_last_intensity
+    type: int
+    restore_value: no
+
+# ============================================================
+# NEW: NUMBER COMPONENT
+# ============================================================
+number:
+  - platform: template
+    name: "Rika Visio Intensity Level"
+    id: rika_intensity_number
+    mode: SLIDER
+    min_value: 0   # Corresponds to internal level 1
+    max_value: 100 # Corresponds to internal level 20
+    step: 5
+    
+    # Read the current state: g_intensity (0-20) * 5. 
+    lambda: return id(g_intensity) * 5.0;
+    
+    # When the number is changed in Home Assistant (x is the value 5-100):
+    set_action:
+      - lambda: |-
+          // Divide the user's percentage (5-100) by 5 to get the internal level (1-20).
+          // Since the number component starts at 5, new_level will be 1 or greater.
+          int new_level = (int)std::round(x / 5.0f);
+          
+          id(g_intensity) = new_level;
+          ESP_LOGD("main", "Intensity set via Number to: %.0f%% (Level: %d)", x, id(g_intensity));
+
+# ============================================================
+# SERVO + OUTPUT
+# ============================================================
+servo:
+  - id: power_servo
+    output: power_servo_output
+    auto_detach_time: 5s
+  - id: intensity_servo
+    output: intensity_servo_output
+    auto_detach_time: 5s
+
+output:
+  - platform: ledc
+    id: power_servo_output
+    pin: ${power_servo_pin}
+    frequency: 50 Hz
+  - platform: ledc
+    id: intensity_servo_output
+    pin: ${intensity_servo_pin}
+    frequency: 50 Hz
+
+# ============================================================
+# INTERVAL LOGIC (same as before)
+# ============================================================
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          // Power on/off + intensity logic identical to previous configuration
+          if (id(g_power) && !id(g_last_power)) {
+            ESP_LOGD("main", "Turn on oven");
+            id(rika_status_sensor)->publish_state("Turning On");
+            id(press_power_button)->execute();
+            id(g_last_time_power) = millis();
+            id(g_powering_up) = true;
+            id(g_last_power) = true;
+            return;
+          }
+
+          if (id(g_power) && id(g_powering_up) && ((millis() - id(g_last_time_power)) / 1000) > ${power_on_period}) {
+            ESP_LOGD("main", "Oven turned on");
+            id(g_powering_up) = false;
+            id(rika_status_sensor)->publish_state("On");
+          }
+
+          if (!id(g_power) && id(g_last_power) && !id(g_powering_down)) {
+            ESP_LOGD("main", "Turn oven off");
+            id(rika_status_sensor)->publish_state("Turning Off");
+            id(g_last_time_power) = millis();
+            id(g_powering_down) = true;
+            id(press_power_button)->execute();
+            id(g_last_power) = false;
+            return;
+          }
+
+          if (!id(g_power) && id(g_powering_down) && ((millis() - id(g_last_time_power)) / 1000) > ${power_off_period}) {
+            ESP_LOGD("main", "Oven turned off");
+            id(rika_status_sensor)->publish_state("Off");
+            id(g_powering_down) = false;
+          }
+
+          if (id(g_power) && !id(g_powering_down) && id(g_intensity) != id(g_last_intensity)) {
+            if (id(g_intensity) > id(g_last_intensity)) {
+              ESP_LOGD("main", "Increasing intensity (+)");
+              id(press_intensity_button)->execute(1);
+              id(g_last_intensity) = id(g_last_intensity) + 1;
+            } else if (id(g_intensity) < id(g_last_intensity)) {
+              ESP_LOGD("main", "Decreasing intensity (-)");
+              id(press_intensity_button)->execute(-1);
+              id(g_last_intensity) = id(g_last_intensity) - 1;
+            }
+          }
+
+# ============================================================
+# SCRIPTS
+# ============================================================
+script:
+  - id: press_power_button
+    then:
+      - servo.write:
+          id: power_servo
+          level: ${power_servo_press}
+      - delay: 350ms
+      - servo.write:
+          id: power_servo
+          level: ${power_servo_release}
+      - delay: 300ms
+      #- servo.detach: power_servo
+
+  - id: press_intensity_button
+    mode: single
+    parameters:
+      direction: int
+    then:
+      - lambda: |-
+          float press_level = (direction > 0) ? (${intensity_servo_press_plus}) : (${intensity_servo_press_minus});
+          id(intensity_servo).write(press_level);
+      - delay: 350ms
+      - servo.write:
+          id: intensity_servo
+          level: ${intensity_servo_release}
+      - delay: 300ms
+      #- servo.detach: intensity_servo
+
+# ============================================================
+# SWITCHES + SENSORS
+# ============================================================
+switch:
+  - platform: template
+    name: "Rika Visio Power"
+    id: rika_power_switch
+    optimistic: true
+    lambda: return id(g_power);
+    turn_on_action:
+      - lambda: id(g_power) = true;
+    turn_off_action:
+      - lambda: id(g_power) = false;
+
+  - platform: gpio
+    name: "Rika Visio Fan"
+    id: rika_fan_switch
+    pin: ${fan_pin}
+    restore_mode: RESTORE_DEFAULT_OFF
 
 text_sensor:
-  - platform: custom
-    lambda: |-
-      auto rv_status = new RVStatus();
-      App.register_component(rv_status);
-      return {rv_status->status};
-    text_sensors:
-      - name: "Rika Visio Status"
+  - platform: template
+    name: "Rika Visio Status"
+    id: rika_status_sensor
+    icon: "mdi:fire"
 
 sensor:
-  - platform: custom
-    lambda: |-
-      auto rv_intensity = new RVIntensity();
-      App.register_component(rv_intensity);
-      return {rv_intensity};
-    sensors:
-      name: "Rika Visio Intensity"
-      unit_of_measurement: "%"
-  - platform: custom
-    lambda: |-
-      auto rv_level = new RVLevel();
-      App.register_component(rv_level);
-      return {rv_level};
-    sensors:
-      name: "Rika Visio Level"
-      unit_of_measurement: "%"
+  - platform: template
+    name: "Rika Visio Intensity"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    icon: "mdi:gauge"
+    lambda: return id(g_intensity) * 5.0;
+    update_interval: 1s
+    filters:
+      - delta: 0
 
-switch:
-  - platform: custom
-    lambda: |-
-      auto rv_power_switch = new RVPowerSwitch();
-      App.register_component(rv_power_switch);
-      return {rv_power_switch};
-    switches:
-      name: "Rika Visio Power"
-  - platform: custom
-    lambda: |-
-      auto rv_fan_switch = new RVFanSwitch();
-      App.register_component(rv_fan_switch);
-      return {rv_fan_switch};
-    switches:
-      name: "Rika Visio Fan"
+  - platform: vl53l0x
+    name: "Rika Visio Level Raw"
+    id: rika_level_raw
+    update_interval: 10s
+    #unit_of_measurement: m
+    #accuracy_decimals: 3
+    #filters:
+    #  - lambda: 'return x >= (${level_full_cm} / 100.0) && x <= (${level_empty_cm} / 100.0);'
+    
+  - platform: template
+    name: "Rika Visio Level"
+    unit_of_measurement: "%"
+    icon: "mdi:silo"
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: return id(rika_level_raw).state;
+    filters:
+      - sliding_window_moving_average:
+          window_size: 10
+          send_every: 1
+      - lambda: |-
+          float level_empty = ${level_empty_cm} / 100.0;
+          float level_full = ${level_full_cm} / 100.0;
+          float mapped_value = 100.0f * (x - level_empty) / (level_full - level_empty);
+          return std::min(100.0f, std::max(0.0f, mapped_value));
+      - delta: 0
 
-custom_component:
-  - lambda: |-
-      auto rv_values = new RVValuesAPI();
-      return {rv_values};
+light:
+  - platform: esp32_rmt_led_strip
+    id: led_ww
+    rgb_order: RGB
+    pin: GPIO21
+    num_leds: 1
+    chipset: ws2812
+    name: "on board light"
