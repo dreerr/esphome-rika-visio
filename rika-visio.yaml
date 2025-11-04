@@ -44,7 +44,7 @@ esphome:
             if (id(rika_status_sensor)) id(rika_status_sensor)->publish_state("Off");
           }
       #- light.turn_on:
-      #    id: led_ww           
+      #    id: led_ww
       #    red: 100%
       #    green: 0%
       #    blue: 0%
@@ -78,7 +78,7 @@ api:
             ESP_LOGD("main", "Manual Servo Position -> Power: %f, Intensity: %f", power, intensity);
             id(power_servo).write(power);
             id(intensity_servo).write(intensity);
-            
+
 ota:
   - platform: esphome
     password: "6614e76c805705c9ffba4cbc833084b9"
@@ -108,7 +108,7 @@ globals:
     restore_value: yes
   - id: g_last_power
     type: bool
-    restore_value: no
+    restore_value: yes
   - id: g_powering_up
     type: bool
     initial_value: 'false'
@@ -123,7 +123,7 @@ globals:
     restore_value: yes
   - id: g_last_intensity
     type: int
-    restore_value: no
+    restore_value: yes
 
 # ============================================================
 # NEW: NUMBER COMPONENT
@@ -136,17 +136,17 @@ number:
     min_value: 0   # Corresponds to internal level 1
     max_value: 100 # Corresponds to internal level 20
     step: 5
-    
-    # Read the current state: g_intensity (0-20) * 5. 
-    lambda: return id(g_intensity) * 5.0;
-    
+
+    # Read the current state: g_intensity (0-20) * 5.
+    lambda: return id(g_intensity) * 5;
+
     # When the number is changed in Home Assistant (x is the value 5-100):
     set_action:
       - lambda: |-
           // Divide the user's percentage (5-100) by 5 to get the internal level (1-20).
           // Since the number component starts at 5, new_level will be 1 or greater.
           int new_level = (int)std::round(x / 5.0f);
-          
+
           id(g_intensity) = new_level;
           ESP_LOGD("main", "Intensity set via Number to: %.0f%% (Level: %d)", x, id(g_intensity));
 
@@ -299,7 +299,7 @@ sensor:
     #accuracy_decimals: 3
     #filters:
     #  - lambda: 'return x >= (${level_full_cm} / 100.0) && x <= (${level_empty_cm} / 100.0);'
-    
+
   - platform: template
     name: "Rika Visio Level"
     unit_of_measurement: "%"
