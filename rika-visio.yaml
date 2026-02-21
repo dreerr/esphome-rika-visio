@@ -13,8 +13,8 @@ substitutions:
   power_servo_press: 0.25
   power_servo_release: 0.4
   intensity_servo_press_plus: -0.25
-  intensity_servo_press_minus: 0.07
-  intensity_servo_release: -0.05
+  intensity_servo_release: -0.08
+  intensity_servo_press_minus: 0.08
 
   # -- Timing (s) --
   power_on_period: 1260   # 21 min
@@ -36,19 +36,26 @@ esphome:
       - servo.detach: power_servo
       - servo.detach: intensity_servo
       - lambda: |-
-          id(g_last_power) = id(g_power);
-          id(g_last_intensity) = id(g_intensity);
+          // Show all globals on boot
+          ESP_LOGD("main", "Boot - g_power: %s, g_last_power: %s, g_powering_up: %s, g_powering_down: %s, g_last_time_power: %d, g_last_intensity: %.0f",
+            id(g_power) ? "true" : "false",
+            id(g_last_power) ? "true" : "false",
+            id(g_powering_up) ? "true" : "false",
+            id(g_powering_down) ? "true" : "false",
+            id(g_last_time_power),
+            id(g_last_intensity)
+          );
           if (id(g_power)) {
             if (id(rika_status_sensor)) id(rika_status_sensor)->publish_state("On");
           } else {
             if (id(rika_status_sensor)) id(rika_status_sensor)->publish_state("Off");
           }
-      #- light.turn_on:
+      # - light.turn_on:
       #    id: led_ww
       #    red: 100%
       #    green: 0%
       #    blue: 0%
-      #    brightness: 30%
+      #    brightness: 5%
 
 esp32:
   board: waveshare_esp32_s3_zero
@@ -62,13 +69,6 @@ api:
   encryption:
     key: "CLti5ooAJ4ztehffY7GHdMuEZ49foyVA36oTFB8N5kY="
   services:
-#    - service: set_intensity
-#      variables:
-#        intensity: int
-#      then:
-#        - lambda: |-
-#            ESP_LOGD("main", "Intensity set via API to: %d%%", intensity);
-#            id(g_intensity) = (int)(intensity / 5.0);
     - service: manual_servo_positions
       variables:
         power: float
@@ -118,11 +118,8 @@ globals:
   - id: g_last_time_power
     type: int
     initial_value: '0'
-  - id: g_intensity
-    type: int
-    restore_value: yes
   - id: g_last_intensity
-    type: int
+    type: float
     restore_value: yes
 
 # ============================================================
@@ -130,25 +127,22 @@ globals:
 # ============================================================
 number:
   - platform: template
-    name: "Rika Visio Intensity Level"
+    name: "Rika Visio Intensity"
     id: rika_intensity_number
+    unit_of_measurement: "%"
+    icon: "mdi:gauge"
     mode: SLIDER
-    min_value: 0   # Corresponds to internal level 1
-    max_value: 100 # Corresponds to internal level 20
+    min_value: 0
+    max_value: 100
     step: 5
+    optimistic: true
+    initial_value: 0
+    restore_value: yes
 
-    # Read the current state: g_intensity (0-20) * 5.
-    lambda: return id(g_intensity) * 5;
-
-    # When the number is changed in Home Assistant (x is the value 5-100):
+    # When the number is changed in Home Assistant (x is the value 0-100):
     set_action:
       - lambda: |-
-          // Divide the user's percentage (5-100) by 5 to get the internal level (1-20).
-          // Since the number component starts at 5, new_level will be 1 or greater.
-          int new_level = (int)std::round(x / 5.0f);
-
-          id(g_intensity) = new_level;
-          ESP_LOGD("main", "Intensity set via Number to: %.0f%% (Level: %d)", x, id(g_intensity));
+          ESP_LOGD("main", "Intensity set via Number to: %.0f%%", x);
 
 # ============================================================
 # SERVO + OUTPUT
@@ -172,7 +166,7 @@ output:
     frequency: 50 Hz
 
 # ============================================================
-# INTERVAL LOGIC (same as before)
+# INTERVAL LOGIC
 # ============================================================
 interval:
   - interval: 1s
@@ -211,15 +205,15 @@ interval:
             id(g_powering_down) = false;
           }
 
-          if (id(g_power) && !id(g_powering_down) && id(g_intensity) != id(g_last_intensity)) {
-            if (id(g_intensity) > id(g_last_intensity)) {
+          if (id(g_power) && !id(g_powering_down) && id(rika_intensity_number).state != id(g_last_intensity)) {
+            if (id(rika_intensity_number).state > id(g_last_intensity)) {
               ESP_LOGD("main", "Increasing intensity (+)");
               id(press_intensity_button)->execute(1);
-              id(g_last_intensity) = id(g_last_intensity) + 1;
-            } else if (id(g_intensity) < id(g_last_intensity)) {
+              id(g_last_intensity) = id(g_last_intensity) + 5;
+            } else if (id(rika_intensity_number).state < id(g_last_intensity)) {
               ESP_LOGD("main", "Decreasing intensity (-)");
               id(press_intensity_button)->execute(-1);
-              id(g_last_intensity) = id(g_last_intensity) - 1;
+              id(g_last_intensity) = id(g_last_intensity) - 5;
             }
           }
 
@@ -262,6 +256,7 @@ switch:
     name: "Rika Visio Power"
     id: rika_power_switch
     optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
     lambda: return id(g_power);
     turn_on_action:
       - lambda: id(g_power) = true;
@@ -281,16 +276,6 @@ text_sensor:
     icon: "mdi:fire"
 
 sensor:
-  - platform: template
-    name: "Rika Visio Intensity"
-    unit_of_measurement: "%"
-    accuracy_decimals: 0
-    icon: "mdi:gauge"
-    lambda: return id(g_intensity) * 5.0;
-    update_interval: 1s
-    filters:
-      - delta: 0
-
   - platform: vl53l0x
     name: "Rika Visio Level Raw"
     id: rika_level_raw
